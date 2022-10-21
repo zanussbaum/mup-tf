@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 
 packages = find_packages(exclude=("setup", "tests"))
 
-version = "0.1.0"
+version = "0.0.1"
 
 setup(
     name="mup_tf",
