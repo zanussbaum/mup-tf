@@ -1,4 +1,4 @@
-# MUP for Tensorflow
+# μP for Tensorflow
 
 This is a Tensorflow 2 (very preliminary) port of Yang and Hu et al.'s [μP repo](https://github.com/microsoft/mup)
 
