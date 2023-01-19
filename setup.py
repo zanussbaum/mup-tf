@@ -20,7 +20,7 @@ setup(
         "Programming Language :: Python :: 3.8",
     ],
     install_requires=[
-        "tensorflow>=2.6.2",
+        "tensorflow>=2.6.2,<2.10.0",
         "tqdm",
         "pyyaml",
         "matplotlib",
