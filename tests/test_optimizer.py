@@ -173,7 +173,7 @@ def test_ninf_one_inf():
     val = var.numpy()
 
     # no change for adam
-    assert np.isclose(val, 10.0 - 0.1)
+    assert np.isclose(val, 10.0 - 0.1), f"Expected: {10.0 - 0.1}\t Actual: {val}"
 
     var = tf.Variable(10.0)
     var.infshape = infshape
@@ -188,7 +188,7 @@ def test_ninf_one_inf():
 
     val = var.numpy()
 
-    assert np.isclose(val, 10.0 - 10 * (0.1 * 10))
+    assert np.isclose(val, 10.0 - 10 * (0.1 * 10)), f"Expected: {10.0 - 10 * (0.1 * 10)}\t Actual: {val}"
 
     var = tf.Variable(10.0)
     var.infshape = infshape
@@ -207,4 +207,4 @@ def test_ninf_one_inf():
     update_lr = 0.1 * 10
     grad = 10.0
     mu = 0.9
-    assert np.isclose(val, 10.0 - (update_lr * grad * (1 + mu)))
+    assert np.isclose(val, 10.0 - (update_lr * grad * (1 + mu))), f"Expected: {10.0 - (update_lr * grad * (1 + mu))}\t Actual: {val}"
