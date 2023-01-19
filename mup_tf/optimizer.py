@@ -1,7 +1,7 @@
 import tensorflow as tf
 
 
-class MuAdam(tf.keras.optimizers.Adam):
+class MuAdam(tf.keras.optimizers.experimental.Adam):
     """Adam optimizer with μP-aware learning rate scaling.
 
     This behaves like the tf.keras.optimizers.Adam optimizer, but will scale
@@ -9,64 +9,72 @@ class MuAdam(tf.keras.optimizers.Adam):
     """
 
     def __init__(self, *args, **kwargs):
-        self.infshapes = kwargs.pop("infshapes", None)
+        self.infshapes = kwargs.pop("infshapes", {})
         super().__init__(*args, **kwargs)
 
-    def _resource_apply_dense(self, grad, var, apply_state=None):
-        # changed from https://github.com/keras-team/keras/blob/v2.9.0/keras/optimizers/optimizer_v2/adam.py#L198
-        var_device, var_dtype = var.device, var.dtype.base_dtype
-        coefficients = (apply_state or {}).get(
-            (var_device, var_dtype)
-        ) or self._fallback_apply_state(var_device, var_dtype)
+    def update_step(self, gradient, variable):
+        # changed from https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/optimizers/optimizer_experimental/adam.py#L143
+        # TF 2.10 > uses optimizer_experimental
+        """Update step given gradient and the associated model variable."""
+        beta_1_power = None
+        beta_2_power = None
+        lr = tf.cast(self.learning_rate, variable.dtype)
 
-        m = self.get_slot(var, "m")
-        v = self.get_slot(var, "v")
-
-        if hasattr(var, "infshape"):
-            infshape = var.infshape
+        ##### Here's the only change ####
+        if hasattr(variable, "infshape"):
+            infshape = variable.infshape
         else:
-            infshape = self.infshapes[var.name]
+            infshape = self.infshapes.get(variable.name, None)
 
-        ninf = infshape.ninf()
-        lr = coefficients["lr_t"]
-
-        # from table 8 in https://arxiv.org/pdf/2203.03466.pdf
-        if ninf == 2:
-            lr /= infshape.width_mult()
-
-        if not self.amsgrad:
-            return tf.raw_ops.ResourceApplyAdam(
-                var=var.handle,
-                m=m.handle,
-                v=v.handle,
-                beta1_power=coefficients["beta_1_power"],
-                beta2_power=coefficients["beta_2_power"],
-                lr=lr,
-                beta1=coefficients["beta_1_t"],
-                beta2=coefficients["beta_2_t"],
-                epsilon=coefficients["epsilon"],
-                grad=grad,
-                use_locking=self._use_locking,
-            )
+        if infshape:
+            ninf = infshape.ninf()
         else:
-            vhat = self.get_slot(var, "vhat")
-            return tf.raw_ops.ResourceApplyAdamWithAmsgrad(
-                var=var.handle,
-                m=m.handle,
-                v=v.handle,
-                vhat=vhat.handle,
-                beta1_power=coefficients["beta_1_power"],
-                beta2_power=coefficients["beta_2_power"],
-                lr=lr,
-                beta1=coefficients["beta_1_t"],
-                beta2=coefficients["beta_2_t"],
-                epsilon=coefficients["epsilon"],
-                grad=grad,
-                use_locking=self._use_locking,
+            ninf = None
+
+        if ninf and ninf == 2:
+            lr = tf.Variable(lr / infshape.width_mult(), trainable=False)
+
+        #######################################
+
+        local_step = tf.cast(self.iterations + 1, variable.dtype)
+        beta_1_power = tf.pow(tf.cast(self.beta_1, variable.dtype), local_step)
+        beta_2_power = tf.pow(tf.cast(self.beta_2, variable.dtype), local_step)
+
+        var_key = self._var_key(variable)
+        m = self._momentums[self._index_dict[var_key]]
+        v = self._velocities[self._index_dict[var_key]]
+
+        alpha = lr * tf.sqrt(1 - beta_2_power) / (1 - beta_1_power)
+
+        if isinstance(gradient, tf.IndexedSlices):
+            # Sparse gradients.
+            m.assign_add(-m * (1 - self.beta_1))
+            m.scatter_add(
+                tf.IndexedSlices(gradient.values * (1 - self.beta_1), gradient.indices)
             )
+            v.assign_add(-v * (1 - self.beta_2))
+            v.scatter_add(
+                tf.IndexedSlices(
+                    tf.square(gradient.values) * (1 - self.beta_2), gradient.indices
+                )
+            )
+            if self.amsgrad:
+                v_hat = self._velocity_hats[self._index_dict[var_key]]
+                v_hat.assign(tf.maximum(v_hat, v))
+                v = v_hat
+            variable.assign_sub((m * alpha) / (tf.sqrt(v) + self.epsilon))
+        else:
+            # Dense gradients.
+            m.assign_add((gradient - m) * (1 - self.beta_1))
+            v.assign_add((tf.square(gradient) - v) * (1 - self.beta_2))
+            if self.amsgrad:
+                v_hat = self._velocity_hats[self._index_dict[var_key]]
+                v_hat.assign(tf.maximum(v_hat, v))
+                v = v_hat
+            variable.assign_sub((m * alpha) / (tf.sqrt(v) + self.epsilon))
 
 
-class MuSGD(tf.keras.optimizers.SGD):
+class MuSGD(tf.keras.optimizers.experimental.SGD):
     """Adam optimizer with μP-aware learning rate scaling.
 
     This behaves like the tf.keras.optimizers.SGD optimizer, but will scale
@@ -77,39 +85,56 @@ class MuSGD(tf.keras.optimizers.SGD):
         self.infshapes = kwargs.pop("infshapes", None)
         super().__init__(*args, **kwargs)
 
-    def _resource_apply_dense(self, grad, var, apply_state=None):
-        # changed from https://github.com/keras-team/keras/blob/v2.9.0/keras/optimizers/optimizer_v2/gradient_descent.py#L132
-        var_device, var_dtype = var.device, var.dtype.base_dtype
-        coefficients = (apply_state or {}).get(
-            (var_device, var_dtype)
-        ) or self._fallback_apply_state(var_device, var_dtype)
+    def update_step(self, gradient, variable):
+        # changed from https://github.com/keras-team/keras/blob/07e13740fd181fc3ddec7d9a594d8a08666645f6/keras/optimizers/optimizer_experimental/sgd.py#L143
+        """Update step given gradient and the associated model variable."""
+        lr = tf.cast(self.learning_rate, variable.dtype)
 
-        if hasattr(var, "infshape"):
-            infshape = var.infshape
+        ##### Here's the only change ####
+        if hasattr(variable, "infshape"):
+            infshape = variable.infshape
         else:
-            infshape = self.infshapes[var.name]
+            infshape = self.infshapes.get(variable.name, None)
 
-        ninf = infshape.ninf()
-        lr = coefficients["lr_t"]
+        if infshape:
+            ninf = infshape.ninf()
+        else:
+            ninf = None
 
         # from table 8 in https://arxiv.org/pdf/2203.03466.pdf
-        if ninf == 1:
-            lr *= infshape.width_mult()
-        if ninf == 2:
-            lr /= infshape.fanin_fanout_mult_ratio()
+        if ninf and ninf == 1:
+            lr = tf.Variable(lr * infshape.width_mult(), trainable=False)
+        if ninf and ninf == 2:
+            lr = tf.Variable(lr / infshape.fanin_fanout_mult_ratio(), trainable=False)
+        #######################################
 
-        if self._momentum:
-            momentum_var = self.get_slot(var, "momentum")
-            return tf.raw_ops.ResourceApplyKerasMomentum(
-                var=var.handle,
-                accum=momentum_var.handle,
-                lr=lr,
-                grad=grad,
-                momentum=coefficients["momentum"],
-                use_locking=self._use_locking,
-                use_nesterov=self.nesterov,
-            )
+        m = None
+        var_key = self._var_key(variable)
+        if self.momentum != 0:
+            momentum = tf.cast(self.momentum, variable.dtype)
+            m = self.momentums[self._index_dict[var_key]]
+
+        # TODO(b/204321487): Add nesterov acceleration.
+        if isinstance(gradient, tf.IndexedSlices):
+            # Sparse gradients.
+            add_value = tf.IndexedSlices(-gradient.values * lr, gradient.indices)
+            if m is not None:
+                m.assign(m * momentum)
+                m.scatter_add(add_value)
+                if self.nesterov:
+                    variable.scatter_add(add_value)
+                    variable.assign_add(m * momentum)
+                else:
+                    variable.assign_add(m)
+            else:
+                variable.scatter_add(add_value)
         else:
-            return tf.raw_ops.ResourceApplyGradientDescent(
-                var=var.handle, alpha=lr, delta=grad, use_locking=self._use_locking
-            )
+            # Dense gradients
+            if m is not None:
+                m.assign(-gradient * lr + m * momentum)
+                if self.nesterov:
+                    variable.assign_add(-gradient * lr + m * momentum)
+                else:
+                    variable.assign_add(m)
+            else:
+                variable.assign_add(-gradient * lr)
