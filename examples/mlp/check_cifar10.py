@@ -90,7 +90,7 @@ x_train_norm = (x_train / 127.5) - 1
 
 
 train_loader = (
-    tf.data.Dataset.from_tensor_slices((x_train_norm, y_train)).shuffle(10000).batch(2)
+    tf.data.Dataset.from_tensor_slices((x_train_norm, y_train)).shuffle(10000).batch(64)
 )
 
 df = get_coord_data(
